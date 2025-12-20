@@ -8,9 +8,9 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field
 from pydub import AudioSegment
 
@@ -57,6 +57,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Log all HTTPExceptions with request context (voice/text)
+@app.exception_handler(HTTPException)
+async def http_exception_logger(request: Request, exc: HTTPException):
+    voice = None
+    text = None
+    try:
+        # Attempt to read JSON body for context (safe if JSON and small)
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json()
+            if isinstance(body, dict):
+                voice = body.get("voice")
+                text = body.get("text")
+    except Exception:
+        pass
+
+    try:
+        _logger.error(
+            "HTTPException status=%s detail=%s voice=%s text_len=%s path=%s",
+            getattr(exc, "status_code", None),
+            getattr(exc, "detail", None),
+            voice,
+            (len(text) if isinstance(text, str) else None),
+            request.url.path,
+        )
+        # Optionally log the text itself (could be large)
+        if isinstance(text, str):
+            # Log up to 500 chars to avoid flooding logs
+            snippet = text if len(text) <= 500 else text[:500] + "..."
+            _logger.error("HTTPException text_snippet=%s", snippet)
+    except Exception:
+        pass
+
+    # Return JSON response consistent with FastAPI defaults
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # Global model and concurrency control
 _model = None
